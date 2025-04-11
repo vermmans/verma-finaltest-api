@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Verma Final Test - Flask API on ECS Fargate with NAT, Scaling, ALB
+
+Parameters:
+  VpcCIDR:
+    Default: 10.0.0.0/16
+    Type: String
+
+Resources:
+
+  VermaVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: verma-vpc
+
+  VermaInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VermaAttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref VermaInternetGateway
+      VpcId: !Ref VermaVPC
+
+  VermaPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VermaVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: verma-public-subnet-1
+
+  VermaPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VermaVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: verma-public-subnet-2
+
+  VermaPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VermaVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: verma-private-subnet-1
+
+  VermaPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VermaVPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: verma-private-subnet-2
+
+  VermaEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  VermaNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt VermaEIP.AllocationId
+      SubnetId: !Ref VermaPublicSubnet1
+      Tags:
+        - Key: Name
+          Value: verma-nat-gateway
+
+  VermaPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VermaVPC
+
+  VermaPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VermaAttachIGW
+    Properties:
+      RouteTableId: !Ref VermaPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VermaInternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref VermaPublicSubnet1
+      RouteTableId: !Ref VermaPublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref VermaPublicSubnet2
+      RouteTableId: !Ref VermaPublicRouteTable
+
+  VermaPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VermaVPC
+
+  VermaPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref VermaPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref VermaNATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref VermaPrivateSubnet1
+      RouteTableId: !Ref VermaPrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref VermaPrivateSubnet2
+      RouteTableId: !Ref VermaPrivateRouteTable
+
+  VermaALBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: verma-alb-sg
+      VpcId: !Ref VermaVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  VermaECSSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: verma-ecs-sg
+      VpcId: !Ref VermaVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref VermaALBSG
+
+  VermaECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: verma-ecs-cluster
+
+  VermaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: verma-ecs-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  VermaALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: verma-alb
+      Subnets: [!Ref VermaPublicSubnet1, !Ref VermaPublicSubnet2]
+      SecurityGroups: [!Ref VermaALBSG]
+      Scheme: internet-facing
+      Type: application
+
+  VermaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: verma-target-group
+      Port: 5000
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VermaVPC
+      HealthCheckPath: /
+
+  VermaALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref VermaALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref VermaTargetGroup
+
+  VermaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: verma-api-task
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt VermaExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: verma-container
+          Image:  827410396373.dkr.ecr.ca-central-1.amazonaws.com/verma-final-api
+          PortMappings:
+            - ContainerPort: 5000
+
+  VermaECSService:
+    Type: AWS::ECS::Service
+    DependsOn: VermaALBListener
+    Properties:
+      Cluster: !Ref VermaECSCluster
+      DesiredCount: 2
+      LaunchType: FARGATE
+      TaskDefinition: !Ref VermaTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref VermaECSSG]
+          Subnets: [!Ref VermaPrivateSubnet1, !Ref VermaPrivateSubnet2]
+      LoadBalancers:
+        - TargetGroupArn: !Ref VermaTargetGroup
+          ContainerName: verma-container
+          ContainerPort: 5000
+
+  VermaScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 5
+      MinCapacity: 2
+      ResourceId: !Join ['', ['service/', !Ref VermaECSCluster, '/', !GetAtt VermaECSService.Name]]
+      RoleARN: !GetAtt VermaExecutionRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  VermaScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: verma-ecs-target-tracking
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref VermaScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 50
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 120
